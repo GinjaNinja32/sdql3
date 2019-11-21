@@ -45,6 +45,7 @@
 #define TYP_LITERAL    "literal"
 #define TYP_NEW        "new"
 #define TYP_VARIABLE   "var"
+#define TYP_BRACKETED  "bracketed"
 
 #define SELECT_COLUMNS "columns"
 #define COUNT_CONDITION "condition"
@@ -163,13 +164,14 @@
 					TOK(TYP_KEYWORD, t)
 					continue tok
 
-			if(text2ascii(text,i) in list(34, 39))
+			var/c = text2ascii(text, i)
+
+			if(c in list(34, 39)) // ", '
 				var/start = i
-				var/sc = text2ascii(text, i)
 				i++
-				while(i <= length(text) && text2ascii(text, i) != sc)
+				while(i <= length(text) && text2ascii(text, i) != c)
 					i++
-				if(text2ascii(text, i) != sc)
+				if(text2ascii(text, i) != c)
 					throw "reached end of query inside a string"
 
 				TOK(TYP_LITERAL, copytext(text, start+1, i))
@@ -177,13 +179,22 @@
 				continue tok
 
 			var/start = i
-			id:
-				while(1)
-					switch(text2ascii(text, i))
-						if(65 to 90, 97 to 122, 48 to 57, 46, 47) // A-Z, a-z, 0-9, ., /
-							i++
-						else
-							break id
+			if(c == 47) // /
+				typ:
+					while(1)
+						switch(text2ascii(text, i))
+							if(65 to 90, 95, 97 to 122, 48 to 57, 47) // A-Z, _, a-z, 0-9, /
+								i++
+							else
+								break typ
+			else
+				id:
+					while(1)
+						switch(text2ascii(text, i))
+							if(65 to 90, 95, 97 to 122, 48 to 57, 46) // A-Z, _, a-z, 0-9, .
+								i++
+							else
+								break id
 
 			if(start == i)
 				throw "unexpected character at index [i]: '[copytext(text, i, i+1)]'"
@@ -191,8 +202,6 @@
 			var/ident = copytext(text, start, i)
 
 			tokens[++tokens.len] = parse_ident(ident)
-
-	return 0
 
 /datum/sdql3/proc/parse_ident(ident)
 	if(isnum(text2num(ident)))
@@ -250,8 +259,6 @@
 
 		tree[type] = ret
 
-	return 0
-
 /datum/sdql3/proc/render_group(list/grp)
 	. = list()
 
@@ -265,11 +272,17 @@
 				var/list/show = list()
 				for(var/a in tok[2])
 					show[++show.len] = render_group(list(a))
-				. += "(" + jointext(show, ", ") + ")"
+				. += jointext(show, ", ")
+			if(TYP_BRACKETED)
+				. += "%(%"
+				. += render_group(list(tok[2]))
+				. += "%)"
 			else
 				. += tok[2]
 
-	return jointext(., " ")
+	. = jointext(., " ")
+	. = replacetext(., regex("%+ +%*|%* +%+", "g"), "")
+	return
 
 /datum/sdql3/proc/parse_select(list/grp)
 	// Expected: "SELECT" expr ("," expr)*
@@ -314,7 +327,9 @@
 
 /datum/sdql3/proc/parse_x_type(x, list/grp)
 	// Expected: X type
-	if(length(grp) != 2 || grp[2][1] != TYP_LITERAL || (grp[2][2] != world && !ispath(grp[2][2])))
+	if(length(grp) != 2)
+		throw "incorrect number of tokens following '[x]' at '[render_group(grp)]'"
+	if(grp[2][1] != TYP_LITERAL || (grp[2][2] != world && !ispath(grp[2][2])))
 		throw "expected a path to follow '[x]' at '[render_group(grp)]'"
 
 	return grp[2][2]
@@ -385,7 +400,7 @@
 			ret[++ret.len] = brackets()
 		else if(TOK_IS(bexpr[bi], TYP_KEYWORD, TOK_CLOSBRKT))
 			bi++
-			return reduce_expression(ret)
+			return list(TYP_BRACKETED, reduce_expression(ret))
 		else
 			ret[++ret.len] = bexpr[bi]
 			bi++
@@ -420,15 +435,18 @@
 							expr[i-1] = list(op, left, right)
 						continue group
 
-			if(length(expr) == 2 && expr[1][1] == TYP_VARIABLE && expr[2][1] == TYP_ARGLIST)
-				return list(TYP_CALL, expr[1][2], expr[2][2])
+			if(length(expr) == 2 && expr[1][1] == TYP_VARIABLE && expr[2][1] == TYP_BRACKETED)
+				if(expr[2][2][1] == TYP_ARGLIST)
+					return list(TYP_CALL, expr[1][2], expr[2][2][2])
+				if(expr[2][2][1] == TYP_LITERAL || expr[2][2][1] == TYP_VARIABLE)
+					return list(TYP_CALL, expr[1][2], list(expr[2][2]))
 
 			if(length(expr) == 3 && TOK_IS(expr[1], TYP_KEYWORD, TOK_NEW))
 				if(expr[2][1] != TYP_LITERAL || !ispath(expr[2][2]))
 					throw "expected a type to follow 'new' at '[render_group(expr)]'"
-				if(expr[3][1] != TYP_ARGLIST)
+				if(expr[3][1] != TYP_BRACKETED || expr[3][2][1] != TYP_ARGLIST)
 					throw "expected an argument list to follow '[expr[2][2]]' at '[render_group(expr)]'"
-				return list(TYP_NEW, expr[2][2], expr[3][2])
+				return list(TYP_NEW, expr[2][2], expr[3][2][2])
 
 			if(length(expr) == 0 || (length(expr) % 2) == 1)
 				var/list/args_if_valid = list()
@@ -451,9 +469,6 @@
 			throw "invalid value expression at '[render_group(expr)]'"
 
 	return expr[1]
-
-/datum/sdql3/proc/render_expr(e)
-	return json_encode(e)
 
 /datum/sdql3/proc/h_find_first_tok(list/toks, start=1, type=TOK_COMMA, brackets=TRUE)
 	var/brktlevel = 0
@@ -567,6 +582,9 @@
 	return ret
 
 /datum/sdql3/proc/eval_expr(list/tree, datum/D)
+	if(tree[1] == TYP_BRACKETED)
+		tree = tree[2]
+
 	switch(tree[1])
 		if(TYP_LITERAL)
 			return tree[2]
