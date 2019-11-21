@@ -39,15 +39,12 @@
 #define TOK_BITNOT   "~"
 #define TOK_NEW      "new"
 
-#define TYP_KEYWORD    "keyword"
 #define TYP_ARGLIST    "arglist"
 #define TYP_CALL       "call"
-#define TYP_EXPRESSION "expression"
-#define TYP_IDENTIFIER "identifier"
+#define TYP_KEYWORD    "keyword"
+#define TYP_LITERAL    "literal"
 #define TYP_NEW        "new"
-
-#define IDTYP_LITERAL  "lit"
-#define IDTYP_VARIABLE "var"
+#define TYP_VARIABLE   "var"
 
 #define SELECT_COLUMNS "columns"
 #define COUNT_CONDITION "condition"
@@ -88,14 +85,6 @@
 /proc/sdql3(q)
 	try
 		var/datum/sdql3/S = new(q)
-		var/r = S.tokenise()
-		if(istext(r))
-			return r
-
-		r = S.parse()
-		if(istext(r))
-			return r
-
 		return S.execute()
 	catch(var/exception/e)
 		if(istext(e))
@@ -150,6 +139,8 @@
 /datum/sdql3/New(query)
 		..()
 		q = query
+		tokenise()
+		parse()
 
 /datum/sdql3/proc/tokenise()
 	var/text = q
@@ -179,9 +170,9 @@
 				while(i <= length(text) && text2ascii(text, i) != sc)
 					i++
 				if(text2ascii(text, i) != sc)
-					return "reached end of query inside a string"
+					throw "reached end of query inside a string"
 
-				TOK(TYP_IDENTIFIER, list(IDTYP_LITERAL, copytext(text, start+1, i)))
+				TOK(TYP_LITERAL, copytext(text, start+1, i))
 				i++
 				continue tok
 
@@ -195,32 +186,32 @@
 							break id
 
 			if(start == i)
-				return "unexpected character at index [i]: '[copytext(text, i, i+1)]'"
+				throw "unexpected character at index [i]: '[copytext(text, i, i+1)]'"
 
 			var/ident = copytext(text, start, i)
 
-			TOK(TYP_IDENTIFIER, parse_ident(ident))
+			tokens[++tokens.len] = parse_ident(ident)
 
 	return 0
 
 /datum/sdql3/proc/parse_ident(ident)
 	if(isnum(text2num(ident)))
-		return list(IDTYP_LITERAL, text2num(ident))
+		return list(TYP_LITERAL, text2num(ident))
 	else if(ident == "null")
-		return list(IDTYP_LITERAL, null)
+		return list(TYP_LITERAL, null)
 	else if(ident == "false")
-		return list(IDTYP_LITERAL, 0)
+		return list(TYP_LITERAL, 0)
 	else if(ident == "true")
-		return list(IDTYP_LITERAL, 1)
+		return list(TYP_LITERAL, 1)
 	else if(ident == "world")
-		return list(IDTYP_LITERAL, world)
+		return list(TYP_LITERAL, world)
 	else if(copytext(ident, 1, 2) == "/")
 		var/p = text2path(ident)
 		if(!p)
 			throw "nonexistent type '[ident]'"
-		return list(IDTYP_LITERAL, p)
+		return list(TYP_LITERAL, p)
 	else
-		return list(IDTYP_VARIABLE, splittext(ident, "."))
+		return list(TYP_VARIABLE, splittext(ident, "."))
 
 /datum/sdql3/proc/parse()
 	var/grouping_kw = list(TOK_EXPLAIN, TOK_SELECT, TOK_UPDATE, TOK_SET, TOK_FROM, TOK_WHERE, TOK_DELETE)
@@ -257,10 +248,7 @@
 			else
 				throw "unexpected group type '[type]' - code bug!"
 
-		if(ret == TRUE || istype(ret, /list))
-			tree[type] = ret
-		else
-			return ret
+		tree[type] = ret
 
 	return 0
 
@@ -269,8 +257,10 @@
 
 	for(var/tok in grp)
 		switch(tok[1])
-			if(TYP_IDENTIFIER)
-				. += tok[2][2]
+			if(TYP_LITERAL)
+				. += tok[2]
+			if(TYP_VARIABLE)
+				. += jointext(tok[2], ".")
 			if(TYP_ARGLIST)
 				var/list/show = list()
 				for(var/a in tok[2])
@@ -324,10 +314,10 @@
 
 /datum/sdql3/proc/parse_x_type(x, list/grp)
 	// Expected: X type
-	if(length(grp) != 2 || grp[2][1] != TYP_IDENTIFIER || grp[2][2][1] != IDTYP_LITERAL || (grp[2][2][2] != world && !ispath(grp[2][2][2])))
-		return "expected a path to follow '[x]' at '[render_group(grp)]'"
+	if(length(grp) != 2 || grp[2][1] != TYP_LITERAL || (grp[2][2] != world && !ispath(grp[2][2])))
+		throw "expected a path to follow '[x]' at '[render_group(grp)]'"
 
-	return list(grp[2][2])
+	return grp[2][2]
 
 /datum/sdql3/proc/parse_where(list/grp)
 	// Expected: "WHERE" boolean-condition
@@ -342,18 +332,18 @@
 	var/i = 1
 	while(i <= length(grp))
 		if(i+3 > length(grp))
-			return "incomplete or invalid assignment at '[render_group(grp.Copy(i+1))]'"
+			throw "incomplete or invalid assignment at '[render_group(grp.Copy(i+1))]'"
 
 		if(!TOK_IS(grp[i+2], TYP_KEYWORD, TOK_ASSIGN))
-			return "missing '=' in assignment at '[render_group(grp.Copy(i+1))]'"
+			throw "missing '=' in assignment at '[render_group(grp.Copy(i+1))]'"
 
-		if(grp[i+1][1] != TYP_IDENTIFIER || grp[i+1][2][1] != IDTYP_VARIABLE)
-			return "left operand of '=' must be an identifier at '[render_group(grp.Copy(i+1))]'"
+		if(grp[i+1][1] != TYP_VARIABLE)
+			throw "left operand of '=' must be an identifier at '[render_group(grp.Copy(i+1))]'"
 
 		var/ident = grp[i+1][2]
-		var/str_ident = jointext(ident[2], ".")
+		var/str_ident = jointext(ident, ".")
 		if(set_vars[str_ident])
-			return "duplicated variable '[str_ident]' in '[render_group(grp)]'"
+			throw "duplicated variable '[str_ident]' in '[render_group(grp)]'"
 
 		var/comma = h_find_first_tok(grp, start=i+2, type=TOK_COMMA)
 		if(comma == 0)
@@ -410,9 +400,9 @@
 					var/i = h_find_first_tok(expr, type=op)
 					if(i != 0)
 						if(!unary && i == 1)
-							return "unexpected operator '[op]' with no left operand at '[render_group(expr)]'"
+							throw "unexpected operator '[op]' with no left operand at '[render_group(expr)]'"
 						if(i == length(expr))
-							return "unexpected operator '[op]' with no right operand at '[render_group(expr)]'"
+							throw "unexpected operator '[op]' with no right operand at '[render_group(expr)]'"
 
 						if(unary && op == TOK_MINUS && i != 1) // special-case for -
 							var/left = expr[i-1]
@@ -430,15 +420,15 @@
 							expr[i-1] = list(op, left, right)
 						continue group
 
-			if(length(expr) == 2 && expr[1][1] == TYP_IDENTIFIER && expr[1][2][1] == IDTYP_VARIABLE && expr[2][1] == TYP_ARGLIST)
-				return list(TYP_CALL, expr[1][2][2], expr[2][2])
+			if(length(expr) == 2 && expr[1][1] == TYP_VARIABLE && expr[2][1] == TYP_ARGLIST)
+				return list(TYP_CALL, expr[1][2], expr[2][2])
 
 			if(length(expr) == 3 && TOK_IS(expr[1], TYP_KEYWORD, TOK_NEW))
-				if(expr[2][1] != TYP_IDENTIFIER || expr[2][2][1] != IDTYP_LITERAL || !ispath(expr[2][2][2]))
-					return "expected a type to follow 'new' at '[render_group(expr)]'"
+				if(expr[2][1] != TYP_LITERAL || !ispath(expr[2][2]))
+					throw "expected a type to follow 'new' at '[render_group(expr)]'"
 				if(expr[3][1] != TYP_ARGLIST)
-					return "expected an argument list to follow '[expr[2][2][2]]' at '[render_group(expr)]'"
-				return list(TYP_NEW, expr[2][2][2], expr[3][2])
+					throw "expected an argument list to follow '[expr[2][2]]' at '[render_group(expr)]'"
+				return list(TYP_NEW, expr[2][2], expr[3][2])
 
 			if(length(expr) == 0 || (length(expr) % 2) == 1)
 				var/list/args_if_valid = list()
@@ -446,7 +436,7 @@
 				for(var/i in 1 to length(expr))
 					if(i%2)
 						// 1, 3, 5; these should be values
-						if(expr[i][1] != TYP_IDENTIFIER)
+						if(expr[i][1] != TYP_LITERAL && expr[i][1] != TYP_VARIABLE)
 							has_correct_commas = FALSE
 							break
 						args_if_valid[++args_if_valid.len] = expr[i]
@@ -458,9 +448,9 @@
 				if(has_correct_commas)
 					return list(TYP_ARGLIST, args_if_valid)
 
-			return "invalid value expression at '[render_group(expr)]'"
+			throw "invalid value expression at '[render_group(expr)]'"
 
-	return list(TYP_EXPRESSION, expr[1])
+	return expr[1]
 
 /datum/sdql3/proc/render_expr(e)
 	return json_encode(e)
@@ -508,27 +498,23 @@
 	else
 		set_datumvar(vname.Copy(2), value, D.vars[vname[1]]) // TODO access check
 
-/datum/sdql3/proc/get_ident(list/ident, datum/D)
+/datum/sdql3/proc/get_var(list/ident, datum/D)
 	switch(ident[1])
-		if(IDTYP_LITERAL) return ident[2]
-		if(IDTYP_VARIABLE)
-			switch(ident[2][1])
-				if("src")
-					if(length(ident[2]) == 1)
-						return D
-					else
-						return get_var(ident[2].Copy(2), D)
-				if("global")
-					return get_global(ident[2].Copy(2))
-				if("world")
-					return get_var(ident[2].Copy(2), world)
-				else
-					if(D && (ident[2][1] in D.vars))
-						return get_var(ident[2], D)
-					if(ident[2][1] in global.vars)
-						return get_global(ident[2])
-					throw "attempt to get nonexistent variable '[ident[2][1]]' on [D == world ? "world" : D.type]"
-		else throw "invalid ident type [ident[1]]"
+		if("src")
+			if(length(ident) == 1)
+				return D
+			else
+				return get_datumvar(ident.Copy(2), D)
+		if("global")
+			return get_global(ident.Copy(2))
+		if("world")
+			return get_datumvar(ident.Copy(2), world)
+		else
+			if(D && (ident[1] in D.vars))
+				return get_datumvar(ident, D)
+			if(ident[1] in global.vars)
+				return get_global(ident)
+			throw "attempt to get nonexistent variable '[ident[1]]' on [D == world ? "world" : D.type]"
 
 /datum/sdql3/proc/get_global(list/vname)
 	if(!(vname[1] in global.vars))
@@ -537,16 +523,16 @@
 	if(length(vname) == 1)
 		return global.vars[vname[1]] // TODO access check
 	else
-		return get_var(vname.Copy(2), global.vars[vname[1]]) // TODO access check
+		return get_datumvar(vname.Copy(2), global.vars[vname[1]]) // TODO access check
 
-/datum/sdql3/proc/get_var(list/vname, datum/D)
+/datum/sdql3/proc/get_datumvar(list/vname, datum/D)
 	if(!(vname[1] in D.vars))
 		throw "attempt to get nonexistent variable '[vname[1]]' on [D == world ? "world" : D.type]"
 
 	if(length(vname) == 1)
 		return D.vars[vname[1]] // TODO access check
 	else
-		return get_var(vname.Copy(2), D.vars[vname[1]]) // TODO access check
+		return get_datumvar(vname.Copy(2), D.vars[vname[1]]) // TODO access check
 
 /datum/sdql3/proc/eval_call(list/fn, list/ar, datum/D)
 	var/function = fn[length(fn)]
@@ -560,7 +546,7 @@
 		return call(f)(arglist(eval_exprs(ar, D)))
 
 	if(length(fn) > 1)
-		base = get_ident(list(IDTYP_VARIABLE, fn.Copy(1, length(fn))), D)
+		base = get_var(fn.Copy(1, length(fn)), D)
 
 	if(hascall(base, function))
 		return call(base, function)(arglist(eval_exprs(ar, D)))
@@ -582,10 +568,10 @@
 
 /datum/sdql3/proc/eval_expr(list/tree, datum/D)
 	switch(tree[1])
-		if(TYP_IDENTIFIER)
-			return get_ident(tree[2], D)
-		if(TYP_EXPRESSION)
-			return eval_expr(tree[2], D)
+		if(TYP_LITERAL)
+			return tree[2]
+		if(TYP_VARIABLE)
+			return get_var(tree[2], D)
 		if(TYP_CALL)
 			return eval_call(tree[2], tree[3], D)
 		if(TYP_NEW)
@@ -631,7 +617,7 @@
 
 		var/list/things = list(null)
 		if(TOK_FROM in tree)
-			things = get_from(tree[TOK_FROM][1][2])
+			things = get_from(tree[TOK_FROM])
 
 		if(TOK_WHERE in tree)
 			var/where = tree[TOK_WHERE]
@@ -697,7 +683,7 @@
 	else if((TOK_UPDATE in tree) && (TOK_SET in tree))
 		
 		var/update = tree[TOK_SET]
-		var/type = tree[TOK_UPDATE][1][2]
+		var/type = tree[TOK_UPDATE]
 
 		var/list/things = get_from(type)
 		if(TOK_WHERE in tree)
@@ -712,12 +698,12 @@
 				values[ident] = eval_expr(update[ident], thing)
 
 			for(var/ident in values)
-				set_var(ident[2], values[ident], thing)
+				set_var(ident, values[ident], thing)
 
 		return length(things)
 
 	else if(TOK_DELETE in tree)
-		var/type = tree[TOK_DELETE][1][2]
+		var/type = tree[TOK_DELETE]
 
 		var/list/things = get_from(type)
 		if(TOK_WHERE in tree)
