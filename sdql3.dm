@@ -55,34 +55,47 @@
 
 	[ ] - zero or one of the following
 	{ } - zero or more of the following
-	< > - grouping
 	/.../ - regex
 
 	Query formats:
 
-		SELECT values [ WHERE cond ]
-		SELECT < * | COUNT(*) | [ DISTINCT ] values > FROM /type [ WHERE cond ]
+		query: [ "EXPLAIN" ] data-query
 
-		UPDATE /type SET set_values [ WHERE cond ]
+		data_query: select-query | update-query | delete-query
 
-		CALL function([ values ]) [ ON value ] [ WHERE cond ]
+		select-query: "SELECT" select-columns "FROM" type [ "WHERE" cond ]
+		select-columns: "*" | "COUNT" "(" "*" ")" | "COUNT" "(" expr ")" | "DISTINCT" values | values
 
-		DELETE /type [ WHERE cond ]
+		update-query: "UPDATE" type "SET" assigns [ "WHERE" cond ]
+
+		delete-query: "DELETE" type [ "WHERE" cond ]
 
 	Other stuff:
 
-		values: value { , value }
-		set_values: var = value { , var = value }
+		exprs: expr { "," exprs }
 
-		value: src | var | literal
+		assigns: assign { "," assigns }
+		assign: ident "=" expr
 
-		var: global . path | src . path | path
+		expr: binary | unary | function | new | ident | literal
 
-		path: ident [ . path ]
+		binary: expr binary_op expr
+		binary_op: "==" | "!=" | "<>" | "<" | ">" | "<=" | ">=" | "+" | "-" | "*" | "/" | "|" | "&" | "^"
 
-		ident: /[a-z]+/
+		unary: unary_op expr
+		unary_op: "-" | "~" | "!"
 
+		function: ident "(" [ exprs ] ")"
+		new: "new" type "(" [ exprs ] ")"
+
+		ident: /[A-Za-z0-9_.]+/
+		type: /(\/[A-Za-z0-9]+)+/
+
+		literal: number | string
+		number: /[0-9]+/
+		string: /"[^"]+"/ | /'[^']+'/
 */
+
 /proc/sdql3(q)
 	try
 		var/datum/sdql3/S = new(q)
@@ -444,9 +457,12 @@
 			if(length(expr) == 3 && TOK_IS(expr[1], TYP_KEYWORD, TOK_NEW))
 				if(expr[2][1] != TYP_LITERAL || !ispath(expr[2][2]))
 					throw "expected a type to follow 'new' at '[render_group(expr)]'"
-				if(expr[3][1] != TYP_BRACKETED || expr[3][2][1] != TYP_ARGLIST)
+				if(expr[3][1] != TYP_BRACKETED)
 					throw "expected an argument list to follow '[expr[2][2]]' at '[render_group(expr)]'"
-				return list(TYP_NEW, expr[2][2], expr[3][2][2])
+				if(expr[3][2][1] == TYP_ARGLIST)
+					return list(TYP_NEW, expr[2][2], expr[3][2][2])
+				if(expr[3][2][1] == TYP_LITERAL || expr[3][2][1] == TYP_VARIABLE)
+					return list(TYP_NEW, expr[2][2], list(expr[3][2]))
 
 			if(length(expr) == 0 || (length(expr) % 2) == 1)
 				var/list/args_if_valid = list()
@@ -582,7 +598,7 @@
 	return ret
 
 /datum/sdql3/proc/eval_expr(list/tree, datum/D)
-	if(tree[1] == TYP_BRACKETED)
+	while(tree[1] == TYP_BRACKETED)
 		tree = tree[2]
 
 	switch(tree[1])
