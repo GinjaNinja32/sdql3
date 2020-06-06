@@ -589,7 +589,7 @@
 
 		throw "attempt to call nonexistent function '[function]' in context of [base == world ? "world" : base.type]"
 	else
-		throw "attempt to call nonexistent function '[function]' on [base.type]"
+		throw "attempt to call nonexistent function '[function]' on [base == world ? "world" : base.type]"
 
 /datum/sdql3/proc/eval_exprs(list/exprs, datum/D)
 	var/list/ret = list()
@@ -672,7 +672,7 @@
 						count++
 				return count
 
-		if(select[TOK_STAR])
+		else if(select[TOK_STAR])
 			// SELECT *
 			return things
 
