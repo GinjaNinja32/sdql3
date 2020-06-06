@@ -1,0 +1,208 @@
+
+#define DEBUG
+
+#include "sdql3.dm"
+
+/var/foo
+
+/datum/test
+	var/a
+	var/b
+	var/c
+	var/ph
+
+/datum/test/New(a,b,c)
+	src.a = a
+	src.b = b
+	src.c = c
+	src.ph = new /datum/ph
+
+/datum/test/proc/FooBar()
+	return 10*a+b
+
+/datum/ph
+	var/stuff = 123
+
+/datum/ph/proc/BarFoo()
+	return stuff
+
+/proc/Stuff()
+	world.log << "Stuff[json_encode(args)]"
+	return 42
+
+var/esc = ascii2text(0x1b)
+var/green = "[esc]\[32m"
+var/yellow = "[esc]\[33m"
+var/reset = "[esc]\[0m"
+
+#define OPEN {
+#define CLOSE }
+
+#define SECTION(name) world.log << "=== [name]"
+
+#define EXPECT_PROC(QUERY, RESULT, PROC) do{ \
+	world.log << "'[QUERY]' should result in [RESULT]... \..."; \
+	var/result = sdql3(QUERY); \
+	var/ok; \
+	PROC; \
+	if(ok) { \
+		world.log << "[green]OK[reset]" \
+	} else { \
+		fail_count++; \
+		world.log << "[yellow]got [json_encode(result)][reset]" \
+	} \
+}while(0)
+
+#define EXPECT(QUERY, RESULT, OK) EXPECT_PROC(QUERY, RESULT, ok = (OK))
+#define EXPECT_VALUE(QUERY, VALUE) EXPECT(QUERY, "the value [json_encode(VALUE)]", result == VALUE)
+#define EXPECT_ERR(QUERY, ERR) EXPECT(QUERY, "an error [json_encode(ERR)]", result == ERR)
+
+#define EXPECT_ROWS(QUERY, VALUES...) EXPECT_PROC(QUERY, "the values [json_encode(list(VALUES))]", \
+	var/expect = list(VALUES); \
+	ok = length(result) == length(expect); \
+	if(ok) for(var/row in 1 to length(expect)) OPEN \
+		ok = length(result[row]) == length(expect[row]); \
+		if(ok && !istype(expect[row], /list)) OPEN \
+			ok = result[row] == expect[row]; \
+		CLOSE else if(ok) for(var/col in 1 to length(expect[row])) OPEN \
+			ok = result[row][col] == expect[row][col]; \
+			if(!ok) break; \
+		CLOSE; \
+		if(!ok) break; \
+	CLOSE \
+)
+
+/world/New()
+	var/list/L = list(
+		new /datum/test(1, 1, "foo"),
+		new /datum/test(1, 2, null),
+		new /datum/test(1, 1, 0),
+		new /datum/test(2, 2, 1),
+	)
+
+	var/fail_count = 0
+
+	SECTION("explaining queries")
+	var/e = list(
+		SELECT=list(columns=list(list("literal",42))),
+	)
+	EXPECT_VALUE("EXPLAIN SELECT 42", json_encode(e))
+	e = list(
+		SELECT=list(columns=list(list("var",list("type")))),
+		FROM=/datum,
+		WHERE=list("literal",1),
+	)
+	EXPECT_VALUE("EXPLAIN SELECT type FROM /datum WHERE true", json_encode(e))
+	e = list(
+		UPDATE=/datum,
+		SET=list(list("x")=list("literal",42), list("y", "z")=list("literal",3)),
+		WHERE=list("literal",0),
+	)
+	EXPECT_VALUE("EXPLAIN UPDATE /datum SET x = 42, y.z = 3 WHERE false", json_encode(e))
+	e = list(
+		DELETE=/datum,
+		WHERE=list("literal",123),
+	)
+	EXPECT_VALUE("EXPLAIN DELETE /datum WHERE 123", json_encode(e))
+
+	SECTION("selecting values")
+	EXPECT_VALUE("SELECT COUNT(*) FROM /datum/test", 4)
+	EXPECT_VALUE("SELECT COUNT(a) FROM /datum/test", 4)
+	EXPECT_VALUE("SELECT COUNT(c) FROM /datum/test", 3)
+	EXPECT_ROWS("SELECT * FROM /datum/test", L[1], L[2], L[3], L[4])
+	EXPECT_ROWS("SELECT a, b FROM /datum/test", list(1, 1), list(1, 2), list(1, 1), list(2, 2))
+	EXPECT_ROWS("SELECT DISTINCT a, b FROM /datum/test", list(1, 1), list(1, 2), list(2, 2))
+	EXPECT_ROWS("SELECT DISTINCT a FROM /datum/test", list(1), list(2))
+	EXPECT_ROWS("SELECT DISTINCT a FROM /datum/test WHERE b == 1", list(1))
+
+	SECTION("proc calls")
+	EXPECT_ROWS("SELECT Stuff()", list(42))
+	EXPECT_ROWS("SELECT Stuff(1)", list(42))
+	EXPECT_ROWS("SELECT Stuff(1, 2)", list(42))
+	EXPECT_ROWS("SELECT Stuff(1, 2, 3)", list(42))
+	EXPECT_ROWS("SELECT src.FooBar() FROM /datum/test WHERE a == 1", list(11), list(12), list(11))
+	EXPECT_ROWS("SELECT FooBar() FROM /datum/test WHERE a == 1", list(11), list(12), list(11))
+	EXPECT_ROWS("SELECT src.ph.BarFoo() FROM /datum/test", list(123), list(123), list(123), list(123))
+
+	SECTION("literals and operators")
+	EXPECT_ROWS("SELECT 42, null, true, false, world", list(42, null, 1, 0, world))
+	EXPECT_ROWS("SELECT \"foo\", \"bar\"+\"baz\"", list("foo", "barbaz"))
+	EXPECT_ROWS("SELECT 1 != 2, 1 < 2, 1 <= 2, 1 == 2, 1 >= 2, 1 > 2", list(1, 1, 1, 0, 0, 0))
+	EXPECT_ROWS("SELECT 3 / 4, 3 * 4, 3 + 4, 3 - 4, -4", list(0.75, 12, 7, -1, -4))
+	EXPECT_ROWS("SELECT true && true, true && false, false && false", list(1, 0, 0))
+	EXPECT_ROWS("SELECT true || true, true || false, false || false", list(1, 1, 0))
+	EXPECT_ROWS("SELECT !true, !false", list(0, 1))
+	EXPECT_ROWS("SELECT 3|9, 3&9, 3^9, ~16777173", list(11, 1, 10, 42))
+	EXPECT_ROWS("SELECT (1+3)*-2", list(-8))
+	EXPECT_ROWS("SELECT a, b, a-b FROM /datum/test", list(1, 1, 0), list(1, 2, -1), list(1, 1, 0), list(2, 2, 0))	
+
+	SECTION("changing values")
+	EXPECT_ROWS("SELECT maxx, maxy, maxz FROM world", list(0, 0, 0))
+	EXPECT_VALUE("SELECT COUNT(*) FROM /turf", 0)
+	EXPECT_VALUE("UPDATE world SET maxx = 1, maxy = 2, maxz = 3", 1)
+	EXPECT_ROWS("SELECT maxx, maxy, maxz FROM world", list(1, 2, 3))
+	EXPECT_VALUE("SELECT COUNT(*) FROM /turf", 6)
+
+	EXPECT_ROWS("SELECT a, b, ph.stuff FROM /datum/test", list(1, 1, 123), list(1, 2, 123), list(1, 1, 123), list(2, 2, 123))
+	EXPECT_VALUE("UPDATE /datum/test SET a = 42, ph.stuff = ph.stuff + a + b", 4)
+	EXPECT_ROWS("SELECT a, b, ph.stuff FROM /datum/test", list(42, 1, 125), list(42, 2, 126), list(42, 1, 125), list(42, 2, 127))
+
+	SECTION("deleting and creating instances")
+	EXPECT_ROWS("SELECT a, b FROM /datum/test", list(42, 1), list(42, 2), list(42, 1), list(42, 2))
+	EXPECT_VALUE("DELETE /datum/test WHERE ph.stuff == 127", 1)
+	EXPECT_ROWS("SELECT a, b FROM /datum/test", list(42, 1), list(42, 2), list(42, 1))
+	EXPECT_VALUE("UPDATE world SET global.foo = new /datum/test(4, 5)", 1)
+	EXPECT_ROWS("SELECT a, b FROM /datum/test", list(42, 1), list(42, 2), list(42, 1), list(4, 5))
+
+	SECTION("errors: tokenisation, basic parse failure")
+	EXPECT_ERR("SELECT \"stuff", "reached end of query inside a string")
+	EXPECT_ERR("SELECT * SELECT *", "unexpected repeat of keyword 'SELECT' at 'SELECT *'")
+	EXPECT_ERR("SELECT %", "unexpected character at index 8: '%'")
+	EXPECT_ERR("SELECT Stuff(+)", "invalid value expression at 'Stuff(+)'")
+
+	SECTION("errors: non-path where path expected")
+	EXPECT_ERR("SELECT * FROM 42", "expected a path to follow 'FROM' at 'FROM 42'")
+	EXPECT_ERR("UPDATE 42 SET a = 42", "expected a path to follow 'UPDATE' at 'UPDATE 42'")
+	EXPECT_ERR("DELETE 42", "expected a path to follow 'DELETE' at 'DELETE 42'")
+
+	SECTION("errors: bad set syntax")
+	EXPECT_ERR("UPDATE /foo SET a", "nonexistent type '/foo'")
+	EXPECT_ERR("UPDATE /datum SET a", "incomplete or invalid assignment at 'a'")
+	EXPECT_ERR("UPDATE /datum SET a b c", "missing '=' in assignment at 'a b c'")
+	EXPECT_ERR("UPDATE /datum SET 42 = c", "left operand of '=' must be an identifier at '42 = c'")
+	EXPECT_ERR("UPDATE /datum SET a = 42, a = 2", "duplicated variable 'a' in 'SET a = 42 , a = 2'")
+
+	SECTION("errors: bad value syntax")
+	EXPECT_ERR("SELECT *2", "unexpected operator '*' with no left operand at '* 2'")
+	EXPECT_ERR("SELECT 2*", "unexpected operator '*' with no right operand at '2 *'")
+	EXPECT_ERR("SELECT new 42()", "expected a type to follow 'new' at 'new 42()'")
+	EXPECT_ERR("SELECT new /datum x", "expected an argument list to follow '/datum' at 'new /datum x'")
+	EXPECT_ERR("SELECT 1 2 3", "invalid value expression at '1 2 3'")
+
+	SECTION("errors: set invalid var")
+	EXPECT_ERR("UPDATE world SET asdf = 42", "attempt to set nonexistent variable 'asdf' on world")
+	EXPECT_ERR("UPDATE world SET asdf.bar = 42", "attempt to get nonexistent variable 'asdf' on world")
+	EXPECT_ERR("UPDATE world SET global.asdf = 42", "attempt to set nonexistent global variable 'asdf'")
+	EXPECT_ERR("UPDATE world SET global.asdf.bar = 42", "attempt to get nonexistent global variable 'asdf'")
+	EXPECT_ERR("UPDATE world SET src.asdf = 42", "attempt to set nonexistent variable 'asdf' on world")
+	EXPECT_ERR("UPDATE world SET src.asdf.bar = 42", "attempt to get nonexistent variable 'asdf' on world")
+	EXPECT_ERR("UPDATE /datum SET src.asdf = 42", "attempt to set nonexistent variable 'asdf' on /datum/test")
+
+	SECTION("errors: get invalid var")
+	EXPECT_ERR("SELECT asdf FROM /datum", "attempt to get nonexistent variable 'asdf' on /datum/test")
+	EXPECT_ERR("SELECT src.asdf FROM /datum", "attempt to get nonexistent variable 'asdf' on /datum/test")
+	EXPECT_ERR("SELECT world.asdf FROM /datum", "attempt to get nonexistent variable 'asdf' on world")
+	EXPECT_ERR("SELECT global.asdf FROM /datum", "attempt to get nonexistent global variable 'asdf'")
+
+	SECTION("errors: call invalid proc")
+	EXPECT_ERR("SELECT global.foo()", "attempt to call nonexistent global function 'foo'")
+	EXPECT_ERR("SELECT foo() FROM /datum", "attempt to call nonexistent function 'foo' in context of /datum/test")
+	EXPECT_ERR("SELECT src.foo() FROM /datum", "attempt to call nonexistent function 'foo' on /datum/test")
+
+	world.log << ""
+	if(!fail_count)
+		world.log << "[green]All tests passed.[reset]"
+	else
+		world.log << "[yellow][fail_count] test\s failed.[reset]"
+
+	del(src)
