@@ -108,21 +108,10 @@
 
 /var/list/sdql3_whitespace = list(" ", "\t", "\n")
 /var/list/sdql3_token_list = list(
-	TOK_SELECT,
-	TOK_COUNT,
-	TOK_DISTINCT,
-	TOK_AND,
 	"&&" = TOK_AND,
 	"||" = TOK_OR,
-	TOK_OR,
-	TOK_UPDATE,
-	TOK_SET,
-	TOK_FROM,
-	TOK_WHERE,
-	TOK_DELETE,
 	TOK_EQUAL,
 	TOK_ASSIGN,
-	TOK_EXPLAIN,
 	TOK_LEQUAL,
 	TOK_NEQUAL,
 	"<>" = TOK_NEQUAL,
@@ -140,8 +129,21 @@
 	TOK_BITAND,
 	TOK_BITOR,
 	TOK_BITNOT,
-	TOK_NOT,
 	"!" = TOK_NOT,
+)
+/var/list/sdql3_keyword_list = list(
+	TOK_SELECT,
+	TOK_COUNT,
+	TOK_DISTINCT,
+	TOK_AND,
+	TOK_OR,
+	TOK_UPDATE,
+	TOK_SET,
+	TOK_FROM,
+	TOK_WHERE,
+	TOK_DELETE,
+	TOK_EXPLAIN,
+	TOK_NOT,
 	TOK_NEW,
 )
 
@@ -174,6 +176,17 @@
 					i += length(t)
 					if(sdql3_token_list[t])
 						t = sdql3_token_list[t] // "<>" => "!="
+					TOK(TYP_KEYWORD, t)
+					continue tok
+
+			for(var/t in sdql3_keyword_list)
+				if(cmptext(t, copytext(text, i, i+length(t))))
+					switch(text2ascii(text, i+length(t)))
+						if(65 to 90, 95, 97 to 122, 48 to 57) // A-Z, _, a-z, 0-9
+							continue
+					i += length(t)
+					if(sdql3_keyword_list[t])
+						t = sdql3_keyword_list[t] // "<>" => "!="
 					TOK(TYP_KEYWORD, t)
 					continue tok
 
@@ -318,9 +331,14 @@
 
 	var/list/select = list()
 
-	if(TOK_IS(grp[2], TYP_KEYWORD, TOK_DISTINCT))
+	if(length(grp) > 1 && TOK_IS(grp[2], TYP_KEYWORD, TOK_DISTINCT))
 		select[TOK_DISTINCT] = TRUE
 		grp.Cut(2,3)
+
+	if(length(grp) == 1)
+		if(select[TOK_DISTINCT])
+			throw "expected a field list to follow 'SELECT DISTINCT'"
+		throw "expected a field list to follow 'SELECT'"
 
 	var/list/select_idents = list()
 	var/i = 2

@@ -26,6 +26,10 @@
 /datum/ph/proc/BarFoo()
 	return stuff
 
+/datum/ph/proc/update_stuff()
+	stuff++
+	return stuff
+
 /proc/Stuff()
 	world.log << "Stuff[json_encode(args)]"
 	return 42
@@ -198,6 +202,11 @@ var/reset = "[esc]\[0m"
 	EXPECT_ERR("SELECT global.foo()", "attempt to call nonexistent global function 'foo'")
 	EXPECT_ERR("SELECT foo() FROM /datum", "attempt to call nonexistent function 'foo' in context of /datum/test")
 	EXPECT_ERR("SELECT src.foo() FROM /datum", "attempt to call nonexistent function 'foo' on /datum/test")
+
+	SECTION("misc: anti-regression cases")
+	EXPECT_ERR("SELECT FROM /datum/ph", "expected a field list to follow 'SELECT'")
+	EXPECT_ERR("SELECT DISTINCT FROM /datum/ph", "expected a field list to follow 'SELECT DISTINCT'")
+	EXPECT_ROWS("SELECT update_stuff() FROM /datum/ph", list(126), list(127), list(126), list(124))
 
 	world.log << ""
 	if(!fail_count)
